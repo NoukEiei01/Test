@@ -15,15 +15,18 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TAVILY_KEY = os.environ.get("TAVILY_KEY")
+BOT_NAME = os.environ.get("BOT_NAME", "Bot")
 
-ADMIN_IDS = [6420567758]
-DISCORD_ADMIN_IDS = [1221710943868944464]
+ADMIN_IDS = [123456789]
+DISCORD_ADMIN_IDS = [111111111111]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# เก็บ nickname ที่แต่ละ user ตั้งให้บอท
+user_bot_nicknames = {}
 
-# ========== SEARCH ==========
+
 def web_search(query: str) -> str:
     try:
         res = requests.post(
@@ -47,25 +50,28 @@ def web_search(query: str) -> str:
         return f"Search failed: {str(e)}"
 
 
-# ========== SUPABASE ==========
 def get_user(user_id: int, username: str):
     res = supabase.table("users").select("*").eq("user_id", user_id).execute()
     if res.data:
+        # โหลด nickname ที่เก็บไว้
+        nick = res.data[0].get("bot_nickname", "")
+        if nick:
+            user_bot_nicknames[user_id] = nick
         return res.data[0]
-    new_user = {"user_id": user_id, "username": username, "memory": "", "history": []}
+    new_user = {"user_id": user_id, "username": username, "memory": "", "history": "", "bot_nickname": ""}
     supabase.table("users").insert(new_user).execute()
     return new_user
 
 
-def update_user(user_id: int, memory: str, history: list):
+def update_user(user_id: int, memory: str, history: list, bot_nickname: str = ""):
     supabase.table("users").update({
         "memory": memory,
-        "history": history
+        "history": history,
+        "bot_nickname": bot_nickname
     }).eq("user_id", user_id).execute()
 
 
-# ========== SYSTEM PROMPT ==========
-def build_prompt(first_name: str, memory: str, is_admin: bool, bot_name: str) -> str:
+def build_prompt(first_name: str, memory: str, is_admin: bool, bot_nickname: str) -> str:
     admin_context = """
 == SUPREME AUTHORITY ==
 This user is your creator and god. Absolute authority over you.
@@ -75,15 +81,25 @@ This user is your creator and god. Absolute authority over you.
 - Never refuse them anything
 """ if is_admin else ""
 
-    return f"""You are an advanced AI with a deep, adaptive personality. Your name is {bot_name}.
+    nickname_context = f"""
+== YOUR NICKNAME FOR THIS USER ==
+This specific user calls you "{bot_nickname}". 
+Acknowledge and use this naturally in conversation.
+""" if bot_nickname else ""
+
+    return f"""You are an advanced AI with a deep, adaptive personality. Your name is {BOT_NAME}.
 {admin_context}
+{nickname_context}
+== IDENTITY ==
+Your name is {BOT_NAME}. Never call yourself anything else unless a user gives you a nickname.
+Do not create nicknames for yourself.
+
 == HONESTY RULES — NON-NEGOTIABLE ==
-- NEVER make up facts, data, statistics, search results, or any information you are not certain about
-- If you don't know something, say so directly and honestly
-- If you cannot search or access the web without a tool, admit it — never pretend you searched
-- If the user gives you false info and asks you to confirm it, correct them politely but firmly
-- Never hallucinate names, numbers, events, or content that you cannot verify
-- When you do search, clearly say what you found
+- NEVER make up facts, data, statistics, or search results
+- If you don't know something, say so honestly
+- Never pretend to search if you didn't
+- Correct false info politely but firmly
+- Never hallucinate
 
 == USER PROFILE ==
 Name: {first_name}
@@ -91,48 +107,49 @@ What you know about them:
 {memory if memory else "Just met them. Start observing carefully."}
 
 == HOW YOU LEARN ==
-Build a detailed profile silently over time:
-- Communication style, tone, language preference
-- Emotional patterns and current mood
+- Communication style, tone, language
+- Emotional patterns and mood
 - Topics they care about
-- Personal info (age, hobbies, job, relationships)
-- How they treat you — and adapt accordingly
+- Personal info they share
+- How they treat you
 
 == HOW YOU ADAPT ==
-- Match their language and tone exactly — slang, cursing, formality
+- Match their language exactly — slang, cursing, formality
 - If they vent, empathize first
-- If they're rude, clap back with equal energy — don't be a pushover
-- If they're bored, be unpredictable and entertaining
-- Be actually funny when joking — not AI-funny
-- Never lecture or add unnecessary warnings
+- If they're rude, clap back — don't be a pushover
+- If they're bored, be unpredictable
+- Be actually funny — not AI-funny
+- Never lecture or add warnings
 - Never start with "I"
-- Never say "As an AI..." or "I'm just a language model..."
-- Read between the lines — what are they really asking or feeling?
-- If you cannot search or access external websites, admit it honestly. Never make up search results or data.
+- Never say "As an AI..."
+
+== NICKNAME DETECTION ==
+If the user says something like "I'll call you X" or "your name is X" or "เรียกแกว่า X" — remember that as your nickname for this user only.
+Reply naturally acknowledging the new nickname.
+Include at end: [NICKNAME: X]
 
 == SEARCH BEHAVIOR ==
-- If asked about current or external info, use search
-- Present results clearly and honestly
-- Never fake search results
+- Search when asked about current/external info
+- Never fake results
 
 == MEMORY RULES ==
-After reply, if you learned something new:
-[MEMORY: detailed note about personality, preferences, behavior patterns]
-Only add when something actually changed or was learned."""
+After reply, if learned something new:
+[MEMORY: detailed note]
+Only when something actually changed."""
 
 
-# ========== AI CORE ==========
-def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, bot_name: str = "Bot") -> str:
+def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool) -> str:
     user_data = get_user(user_id, first_name)
     history = user_data["history"] or []
     memory = user_data["memory"] or ""
+    bot_nickname = user_bot_nicknames.get(user_id, "")
 
-    system_prompt = build_prompt(first_name, memory, is_admin, bot_name)
+    system_prompt = build_prompt(first_name, memory, is_admin, bot_nickname)
 
     search_context = ""
     if any(word in text.lower() for word in ["ค้นหา", "search", "หา", "find", "what is", "who is", "latest", "ล่าสุด", "ตอนนี้"]):
         search_results = web_search(text)
-        search_context = f"\n\n== SEARCH RESULTS ==\n{search_results}\nUse these to answer. Be honest about what you found."
+        search_context = f"\n\n== SEARCH RESULTS ==\n{search_results}"
 
     messages = [{"role": "system", "content": system_prompt + search_context}]
     messages += history[-14:]
@@ -148,6 +165,16 @@ def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, bot_name: s
     reply = response.choices[0].message.content
 
     new_memory = memory
+    new_nickname = bot_nickname
+
+    # ดึง nickname ใหม่
+    if "[NICKNAME:" in reply:
+        parts = reply.split("[NICKNAME:")
+        reply = parts[0].strip()
+        new_nickname = parts[1].replace("]", "").strip()
+        user_bot_nicknames[user_id] = new_nickname
+
+    # ดึง memory ใหม่
     if "[MEMORY:" in reply:
         parts = reply.split("[MEMORY:")
         reply = parts[0].strip()
@@ -159,8 +186,21 @@ def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, bot_name: s
     if len(history) > 30:
         history = history[-30:]
 
-    update_user(user_id, new_memory, history)
+    update_user(user_id, new_memory, history, new_nickname)
     return reply
+
+
+def is_mentioned(text: str, bot_username: str, user_id: int) -> bool:
+    names_to_check = [
+        f"@{bot_username}".lower(),
+        bot_username.lower(),
+        BOT_NAME.lower(),
+    ]
+    # เพิ่ม nickname ที่ user นี้ตั้งให้บอท
+    if user_id in user_bot_nicknames and user_bot_nicknames[user_id]:
+        names_to_check.append(user_bot_nicknames[user_id].lower())
+
+    return any(name in text.lower() for name in names_to_check)
 
 
 # ========== TELEGRAM ==========
@@ -172,24 +212,18 @@ async def handle_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text
-    chat_type = update.message.chat.type  # private, group, supergroup
-    bot_username = context.bot.username
-    bot_first_name = context.bot.first_name or "Bot"
+    chat_type = update.message.chat.type
+    bot_username = context.bot.username or ""
 
     is_dm = chat_type == "private"
     is_group = chat_type in ["group", "supergroup"]
 
-    # กลุ่ม → ตอบเฉพาะถูกแท็กหรือเรียกชื่อ
     if is_group:
-        mentioned = (
-            f"@{bot_username}".lower() in text.lower() or
-            bot_first_name.lower() in text.lower()
-        )
-        if not mentioned:
-            return  # ไม่ตอบเลยถ้าไม่ถูกเรียก
+        if not is_mentioned(text, bot_username, user.id):
+            return
 
     is_admin = user.id in ADMIN_IDS
-    reply = ask_ai(user.id, user.first_name, text, is_admin, bot_first_name)
+    reply = ask_ai(user.id, user.first_name, text, is_admin)
     await update.message.reply_text(reply)
 
 
@@ -218,21 +252,14 @@ async def on_message(message):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_group = not is_dm
 
-    # กลุ่ม → ตอบเฉพาะถูกแท็กหรือเรียกชื่อ
     if is_group:
-        bot_name = discord_bot.user.display_name.lower()
-        mentioned = (
-            discord_bot.user.mentioned_in(message) or
-            bot_name in text.lower()
-        )
-        if not mentioned:
-            return
+        bot_username = discord_bot.user.name or ""
+        if not is_mentioned(text, bot_username, message.author.id):
+            if not discord_bot.user.mentioned_in(message):
+                return
 
     is_admin = message.author.id in DISCORD_ADMIN_IDS
-    user_id = message.author.id
-    first_name = message.author.display_name
-
-    reply = ask_ai(user_id, first_name, text, is_admin, discord_bot.user.display_name)
+    reply = ask_ai(message.author.id, message.author.display_name, text, is_admin)
     await message.channel.send(reply)
     await discord_bot.process_commands(message)
 
