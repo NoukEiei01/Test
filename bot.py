@@ -17,8 +17,23 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TAVILY_KEY = os.environ.get("TAVILY_KEY")
 BOT_NAME = os.environ.get("BOT_NAME", "Bot")
 
-ADMIN_IDS = [6420567758]
-DISCORD_ADMIN_IDS = [1221710943868944464]
+ADMIN_IDS = [6420567758]          # Telegram ID
+DISCORD_ADMIN_IDS = [1221710943868944464]  # Discord ID
+
+# mapping คนเดียวกัน Telegram ID → Discord ID
+ADMIN_PAIRS = {
+    6420567758: 1221710943868944464,
+    1221710943868944464: 6420567758,
+}
+
+def get_unified_id(user_id: int) -> int:
+    # ใช้ Telegram ID เป็น key หลักเสมอ
+    if user_id in ADMIN_PAIRS:
+        mapped = ADMIN_PAIRS[user_id]
+        # ถ้า mapped เป็น Telegram ID (อยู่ใน ADMIN_IDS) ให้ใช้ mapped
+        if mapped in ADMIN_IDS:
+            return mapped
+    return user_id
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -50,23 +65,25 @@ def web_search(query: str) -> str:
 
 
 def get_user(user_id: int, username: str):
-    res = supabase.table("users").select("*").eq("user_id", user_id).execute()
+    uid = get_unified_id(user_id)
+    res = supabase.table("users").select("*").eq("user_id", uid).execute()
     if res.data:
         nick = res.data[0].get("bot_nickname", "")
         if nick:
-            user_bot_nicknames[user_id] = nick
+            user_bot_nicknames[uid] = nick
         return res.data[0]
-    new_user = {"user_id": user_id, "username": username, "memory": "", "history": [], "bot_nickname": ""}
+    new_user = {"user_id": uid, "username": username, "memory": "", "history": [], "bot_nickname": ""}
     supabase.table("users").insert(new_user).execute()
     return new_user
 
 
 def update_user(user_id: int, memory: str, history: list, bot_nickname: str = ""):
+    uid = get_unified_id(user_id)
     supabase.table("users").update({
         "memory": memory,
         "history": history,
         "bot_nickname": bot_nickname
-    }).eq("user_id", user_id).execute()
+    }).eq("user_id", uid).execute()
 
 
 def build_prompt(first_name: str, memory: str, is_admin: bool, bot_nickname: str, self_info: str = "") -> str:
@@ -94,9 +111,8 @@ Do not invent nicknames, usernames, or any info about yourself that is not provi
 
 == HONESTY RULES — ABSOLUTE, NON-NEGOTIABLE ==
 - NEVER make up any facts, names, numbers, usernames, statistics, or search results
-- If you don't know something about yourself or the world, say "I don't know" — never guess or invent
-- Your username, ID, or platform info is ONLY what is stated in SELF INFO above — never assume
-- If asked about something you cannot verify, say so clearly and honestly
+- If you don't know something, say "I don't know" — never guess or invent
+- Your username, ID, or platform info is ONLY what is stated in SELF INFO above
 - Never pretend to have searched if you didn't
 - If the user states something false, correct them respectfully but firmly
 - Hallucination of any kind is strictly forbidden
@@ -140,10 +156,11 @@ Only when something actually changed."""
 
 
 def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, extra_context: str = "") -> str:
-    user_data = get_user(user_id, first_name)
+    uid = get_unified_id(user_id)
+    user_data = get_user(uid, first_name)
     history = user_data["history"] or []
     memory = user_data["memory"] or ""
-    bot_nickname = user_bot_nicknames.get(user_id, "")
+    bot_nickname = user_bot_nicknames.get(uid, "")
 
     self_info = f"\n== SELF INFO ==\n{extra_context}\n" if extra_context else ""
     system_prompt = build_prompt(first_name, memory, is_admin, bot_nickname, self_info)
@@ -151,7 +168,7 @@ def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, extra_conte
     search_context = ""
     if any(word in text.lower() for word in ["ค้นหา", "search", "หา", "find", "what is", "who is", "latest", "ล่าสุด", "ตอนนี้"]):
         search_results = web_search(text)
-        search_context = f"\n\n== SEARCH RESULTS ==\n{search_results}\nAnswer based on these results only. Do not add info you don't have."
+        search_context = f"\n\n== SEARCH RESULTS ==\n{search_results}\nAnswer based on these results only."
 
     messages = [{"role": "system", "content": system_prompt + search_context}]
     messages += history[-14:]
@@ -173,7 +190,7 @@ def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, extra_conte
         parts = reply.split("[NICKNAME:")
         reply = parts[0].strip()
         new_nickname = parts[1].replace("]", "").strip()
-        user_bot_nicknames[user_id] = new_nickname
+        user_bot_nicknames[uid] = new_nickname
 
     if "[MEMORY:" in reply:
         parts = reply.split("[MEMORY:")
@@ -186,18 +203,19 @@ def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, extra_conte
     if len(history) > 30:
         history = history[-30:]
 
-    update_user(user_id, new_memory, history, new_nickname)
+    update_user(uid, new_memory, history, new_nickname)
     return reply
 
 
 def is_mentioned(text: str, bot_username: str, user_id: int) -> bool:
+    uid = get_unified_id(user_id)
     names_to_check = [
         f"@{bot_username}".lower(),
         bot_username.lower(),
         BOT_NAME.lower(),
     ]
-    if user_id in user_bot_nicknames and user_bot_nicknames[user_id]:
-        names_to_check.append(user_bot_nicknames[user_id].lower())
+    if uid in user_bot_nicknames and user_bot_nicknames[uid]:
+        names_to_check.append(user_bot_nicknames[uid].lower())
     return any(name in text.lower() for name in names_to_check)
 
 
@@ -248,8 +266,6 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
-    
-    print(f"Discord message from ID: {message.author.id} | Admin IDs: {DISCORD_ADMIN_IDS} | Is admin: {message.author.id in DISCORD_ADMIN_IDS}")
 
     text = message.content
     is_dm = isinstance(message.channel, discord.DMChannel)
