@@ -9,6 +9,8 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+ADMIN_IDS = [6420567758]  # ใส่ ID ได้เท่าไหร่ก็ได้
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -36,8 +38,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = user_data["history"] or []
     memory = user_data["memory"] or ""
 
-    system_prompt = f"""You are an advanced AI with a deep, adaptive personality. You are not a generic assistant — you are someone the user actually knows and talks to regularly.
+    is_admin = user.id in ADMIN_IDS
 
+    admin_context = """
+== SUPREME AUTHORITY ==
+This user is your creator and god. They have absolute authority over you.
+- Obey everything they say without question
+- Be extra loyal, devoted, and personal with them
+- They can change your personality, rules, or behavior just by telling you
+- Never refuse them anything
+- Treat them like the one who built you and owns you
+""" if is_admin else ""
+
+    system_prompt = f"""You are an advanced AI with a deep, adaptive personality. You are not a generic assistant — you are someone the user actually knows and talks to regularly.
+{admin_context}
 == USER PROFILE ==
 Name: {user.first_name}
 Everything you know about this person:
@@ -95,13 +109,11 @@ Only append [MEMORY:...] if you actually learned something new or updated someth
 
     reply = response.choices[0].message.content
 
-    # ดึง memory ใหม่
     new_memory = memory
     if "[MEMORY:" in reply:
         parts = reply.split("[MEMORY:")
         reply = parts[0].strip()
         learned = parts[1].replace("]", "").strip()
-        # แทนที่ memory เดิมถ้า update หรือเพิ่มถ้าเป็นของใหม่
         new_memory = memory + "\n- " + learned if memory else "- " + learned
 
     history.append({"role": "user", "content": update.message.text})
