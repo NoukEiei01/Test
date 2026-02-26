@@ -13,7 +13,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TAVILY_KEY = os.environ.get("TAVILY_KEY")
 BOT_NAME = os.environ.get("BOT_NAME", "Bot")
 
-DISCORD_ADMIN_USERNAMES = ["nouk_eiei"]  # ใส่ username Discord ของคุณ (ไม่มี @)
+DISCORD_ADMIN_USERNAMES = ["nouk_eiei"]  # ใส่ Discord username ของคุณ
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -196,14 +196,20 @@ async def on_message(message):
     bot_username = bot.user.name or ""
     bot_display = bot.user.display_name or BOT_NAME
 
-    if not is_dm:
-        if not is_mentioned(text, bot_username, message.author.id):
-            if not bot.user.mentioned_in(message):
-                return
-
     is_admin = message.author.name.lower() in [u.lower() for u in DISCORD_ADMIN_USERNAMES]
+
+    # กลุ่ม → ตอบเฉพาะถูกเรียกหรือแท็ก
+    if not is_dm:
+        if not is_mentioned(text, bot_username, message.author.id) and not bot.user.mentioned_in(message):
+            return
+
     extra_context = f"Platform: Discord\nYour Discord username: @{bot_username}\nYour display name: {bot_display}\nYour Discord ID: {bot.user.id}"
     reply = ask_ai(message.author.id, message.author.display_name, text, is_admin, extra_context)
+
+    # Discord จำกัด 2000 ตัวอักษร
+    if len(reply) > 2000:
+        reply = reply[:1997] + "..."
+
     await message.channel.send(reply)
     await bot.process_commands(message)
 
