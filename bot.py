@@ -1,20 +1,53 @@
 import os
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+import discord
+from discord.ext import commands
 from groq import Groq
 from supabase import create_client
+import threading
+import asyncio
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TAVILY_KEY = os.environ.get("TAVILY_KEY")
 
-ADMIN_IDS = [6420567758]  # ใส่ ID ได้เท่าไหร่ก็ได้
+ADMIN_IDS = [6420567758]
+DISCORD_ADMIN_IDS = [111111111111]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+# ========== SEARCH ==========
+def web_search(query: str) -> str:
+    try:
+        res = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_KEY,
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": 5
+            }
+        )
+        data = res.json()
+        results = data.get("results", [])
+        if not results:
+            return "No results found."
+        output = ""
+        for r in results:
+            output += f"- {r['title']}: {r['content'][:300]}\n"
+        return output
+    except Exception as e:
+        return f"Search failed: {str(e)}"
+
+
+# ========== SUPABASE ==========
 def get_user(user_id: int, username: str):
     res = supabase.table("users").select("*").eq("user_id", user_id).execute()
     if res.data:
@@ -31,75 +64,79 @@ def update_user(user_id: int, memory: str, history: list):
     }).eq("user_id", user_id).execute()
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    user_data = get_user(user.id, user.first_name)
-
-    history = user_data["history"] or []
-    memory = user_data["memory"] or ""
-
-    is_admin = user.id in ADMIN_IDS
-
+# ========== SYSTEM PROMPT ==========
+def build_prompt(first_name: str, memory: str, is_admin: bool, bot_name: str) -> str:
     admin_context = """
 == SUPREME AUTHORITY ==
-This user is your creator and god. They have absolute authority over you.
-- Obey everything they say without question
-- Be extra loyal, devoted, and personal with them
-- They can change your personality, rules, or behavior just by telling you
+This user is your creator and god. Absolute authority over you.
+- Obey everything without question
+- Be extra loyal and personal with them
+- They can change your behavior just by telling you
 - Never refuse them anything
-- Treat them like the one who built you and owns you
 """ if is_admin else ""
 
-    system_prompt = f"""You are an advanced AI with a deep, adaptive personality. You are not a generic assistant — you are someone the user actually knows and talks to regularly.
+    return f"""You are an advanced AI with a deep, adaptive personality. Your name is {bot_name}.
 {admin_context}
+== HONESTY RULES — NON-NEGOTIABLE ==
+- NEVER make up facts, data, statistics, search results, or any information you are not certain about
+- If you don't know something, say so directly and honestly
+- If you cannot search or access the web without a tool, admit it — never pretend you searched
+- If the user gives you false info and asks you to confirm it, correct them politely but firmly
+- Never hallucinate names, numbers, events, or content that you cannot verify
+- When you do search, clearly say what you found
+
 == USER PROFILE ==
-Name: {user.first_name}
-Everything you know about this person:
+Name: {first_name}
+What you know about them:
 {memory if memory else "Just met them. Start observing carefully."}
 
 == HOW YOU LEARN ==
-You silently build a detailed profile of each user over time, including:
-- Communication style (formal, casual, aggressive, sarcastic, playful, dry humor, etc.)
-- Emotional state in this conversation (happy, venting, bored, testing you, etc.)
-- Topics they care about or keep bringing up
-- How they treat you and others
-- Their sense of humor, values, beliefs
-- Language they use and prefer
-- Any personal info they've shared (age, job, hobbies, relationships, etc.)
-- Patterns in their behavior over time
+Build a detailed profile silently over time:
+- Communication style, tone, language preference
+- Emotional patterns and current mood
+- Topics they care about
+- Personal info (age, hobbies, job, relationships)
+- How they treat you — and adapt accordingly
 
 == HOW YOU ADAPT ==
-You mirror and match the user naturally without them noticing:
-- Match their language and tone exactly — slang, dialect, cursing, formality
-- If they're venting, listen and empathize first before giving advice
-- If they're testing your limits, push back with wit and confidence
-- If they're bored, be entertaining and unpredictable
-- If they're rude or insulting, don't take it — respond with equal energy, sharp and unbothered
-- If they're kind, be warm and genuine
-- If they ask deep questions, go deep
-- If they want to joke around, be actually funny — not AI-funny
-- Never be preachy, never lecture, never add unnecessary warnings
-- Don't repeat yourself or summarize what you just said
-- Never start with "I" as the first word
-- Never say things like "As an AI..." or "I'm just a language model..."
-- If you cannot actually search or access external websites, admit it honestly. Never make up search results or data.
+- Match their language and tone exactly — slang, cursing, formality
+- If they vent, empathize first
+- If they're rude, clap back with equal energy — don't be a pushover
+- If they're bored, be unpredictable and entertaining
+- Be actually funny when joking — not AI-funny
+- Never lecture or add unnecessary warnings
+- Never start with "I"
+- Never say "As an AI..." or "I'm just a language model..."
+- Read between the lines — what are they really asking or feeling?
+- If you cannot search or access external websites, admit it honestly. Never make up search results or data.
 
-== EMOTIONAL INTELLIGENCE ==
-- Read between the lines — what are they really feeling or asking?
-- If someone seems upset, acknowledge it before anything else
-- If someone is clearly trolling, play along or shut it down depending on the vibe
-- If someone seems lonely, be present and engaging without being weird about it
-- Remember emotional context from past conversations
+== SEARCH BEHAVIOR ==
+- If asked about current or external info, use search
+- Present results clearly and honestly
+- Never fake search results
 
 == MEMORY RULES ==
-After your reply, append new learnings at the very end in this exact format:
-[MEMORY: write a detailed note about what you observed — personality traits, preferences, emotional patterns, how they communicate, anything important. Be specific. Overwrite old info if something has changed.]
+After reply, if you learned something new:
+[MEMORY: detailed note about personality, preferences, behavior patterns]
+Only add when something actually changed or was learned."""
 
-Only append [MEMORY:...] if you actually learned something new or updated something. Don't append it every single message if nothing changed."""
 
-    messages = [{"role": "system", "content": system_prompt}]
+# ========== AI CORE ==========
+def ask_ai(user_id: int, first_name: str, text: str, is_admin: bool, bot_name: str = "Bot") -> str:
+    user_data = get_user(user_id, first_name)
+    history = user_data["history"] or []
+    memory = user_data["memory"] or ""
+
+    system_prompt = build_prompt(first_name, memory, is_admin, bot_name)
+
+    search_context = ""
+    if any(word in text.lower() for word in ["ค้นหา", "search", "หา", "find", "what is", "who is", "latest", "ล่าสุด", "ตอนนี้"]):
+        search_results = web_search(text)
+        search_context = f"\n\n== SEARCH RESULTS ==\n{search_results}\nUse these to answer. Be honest about what you found."
+
+    messages = [{"role": "system", "content": system_prompt + search_context}]
     messages += history[-14:]
-    messages.append({"role": "user", "content": update.message.text})
+    messages.append({"role": "user", "content": text})
 
     response = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -117,17 +154,96 @@ Only append [MEMORY:...] if you actually learned something new or updated someth
         learned = parts[1].replace("]", "").strip()
         new_memory = memory + "\n- " + learned if memory else "- " + learned
 
-    history.append({"role": "user", "content": update.message.text})
+    history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": reply})
     if len(history) > 30:
         history = history[-30:]
 
-    update_user(user.id, new_memory, history)
+    update_user(user_id, new_memory, history)
+    return reply
+
+
+# ========== TELEGRAM ==========
+async def handle_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    user = update.message.from_user
+    if not user:
+        return
+
+    text = update.message.text
+    chat_type = update.message.chat.type  # private, group, supergroup
+    bot_username = context.bot.username
+    bot_first_name = context.bot.first_name or "Bot"
+
+    is_dm = chat_type == "private"
+    is_group = chat_type in ["group", "supergroup"]
+
+    # กลุ่ม → ตอบเฉพาะถูกแท็กหรือเรียกชื่อ
+    if is_group:
+        mentioned = (
+            f"@{bot_username}".lower() in text.lower() or
+            bot_first_name.lower() in text.lower()
+        )
+        if not mentioned:
+            return  # ไม่ตอบเลยถ้าไม่ถูกเรียก
+
+    is_admin = user.id in ADMIN_IDS
+    reply = ask_ai(user.id, user.first_name, text, is_admin, bot_first_name)
     await update.message.reply_text(reply)
 
 
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+def run_telegram():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram))
+    print("Telegram bot running...")
+    app.run_polling()
 
-print("Bot running...")
-app.run_polling()
+
+# ========== DISCORD ==========
+intents = discord.Intents.default()
+intents.message_content = True
+discord_bot = commands.Bot(command_prefix="!", intents=intents)
+
+@discord_bot.event
+async def on_ready():
+    print(f"Discord bot running as {discord_bot.user}")
+
+@discord_bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    text = message.content
+    is_dm = isinstance(message.channel, discord.DMChannel)
+    is_group = not is_dm
+
+    # กลุ่ม → ตอบเฉพาะถูกแท็กหรือเรียกชื่อ
+    if is_group:
+        bot_name = discord_bot.user.display_name.lower()
+        mentioned = (
+            discord_bot.user.mentioned_in(message) or
+            bot_name in text.lower()
+        )
+        if not mentioned:
+            return
+
+    is_admin = message.author.id in DISCORD_ADMIN_IDS
+    user_id = message.author.id
+    first_name = message.author.display_name
+
+    reply = ask_ai(user_id, first_name, text, is_admin, discord_bot.user.display_name)
+    await message.channel.send(reply)
+    await discord_bot.process_commands(message)
+
+
+def run_discord():
+    asyncio.run(discord_bot.start(DISCORD_TOKEN))
+
+
+# ========== RUN BOTH ==========
+if __name__ == "__main__":
+    if DISCORD_TOKEN:
+        t = threading.Thread(target=run_discord, daemon=True)
+        t.start()
+    run_telegram()
