@@ -13,7 +13,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TAVILY_KEY = os.environ.get("TAVILY_KEY")
 BOT_NAME = os.environ.get("BOT_NAME", "Bot")
 
-DISCORD_ADMIN_IDS = [1221710943868944464]  # Discord ID
+DISCORD_ADMIN_USERNAMES = ["nouk_eiei"]  # ใส่ username Discord ของคุณ (ไม่มี @)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -201,7 +201,7 @@ async def on_message(message):
             if not bot.user.mentioned_in(message):
                 return
 
-    is_admin = message.author.id in DISCORD_ADMIN_IDS
+    is_admin = message.author.name.lower() in [u.lower() for u in DISCORD_ADMIN_USERNAMES]
     extra_context = f"Platform: Discord\nYour Discord username: @{bot_username}\nYour display name: {bot_display}\nYour Discord ID: {bot.user.id}"
     reply = ask_ai(message.author.id, message.author.display_name, text, is_admin, extra_context)
     await message.channel.send(reply)
