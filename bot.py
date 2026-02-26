@@ -248,6 +248,8 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
+    
+    print(f"Discord message from ID: {message.author.id} | Admin IDs: {DISCORD_ADMIN_IDS} | Is admin: {message.author.id in DISCORD_ADMIN_IDS}")
 
     text = message.content
     is_dm = isinstance(message.channel, discord.DMChannel)
